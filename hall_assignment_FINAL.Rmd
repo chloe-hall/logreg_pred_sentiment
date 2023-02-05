@@ -1,0 +1,457 @@
+---
+title: "hall_ass_final"
+author: "Chloe Hall"
+date: "2022-11-08"
+output:
+  pdf_document: 
+    toc: true
+    number_sections: yes
+  html_document: 
+    toc: yes
+    number_sections: yes
+---
+Sentiment Analysis
+
+# Introduction
+I will be performing a Principle Component Analysis on the Goodreads Book dataset to try and make a more accurate logistic regression that is able to predict if a book will have a good or bad rating on Goodreads from a sentiment analysis of its book description. I chose rating as my outcome variable and the sentiments from the NRC sentiment dictionary as my predictors, which incluces anger, anticipation, disgust, fear, joy, negative, sadness, surprise, and trust. In my Assignment 6, I conducted a similar project using the NRC sentiment dictionary as my predictor variables for assignement 6, so I have changed the parameters of the good and bad ratings and have added in a PCA to see if these will increase my model's accuracy and improve its prediction ability on the dataset. 
+
+## Research Question
+
+Can the sentiment counts for words in Goodreads book description related to anger, anticipation, disgust, fear, joy, sadness, surprise, and trust derived from the NRC sentiment dictionary be reduced using a Principle Component Analysis into predictor variables that predict if book reviews will be good or bad?
+
+## Data Discussion
+The data used in this analysis is the Goodreads Book Datasets With User Rating 2M data set. The data set contains information about approximately 10,000,000 books from the site Goodreads archive including Book Title, Rating Distribution for 1-5 stars, Pages Number, Total Rating Distribution, Publish Month, Publish Day, Publisher, Count of Reviews, Publish Year, Language, Authors, Rating, ISBN, Count of Text Reviews, and a Book Description. There are several files within the dataset so for the sake of scale, I will be using the csv file book2000k-3000k and operating my analysis on only the first 100k books in that dataset. 
+
+I will be using the words within the Book Description text in order to run a NLP sentiment analysis on what words within a books description are associated with positively reviewed books and what are associated with negatively reviewed books.  
+
+Then I will be using the AFINN sentiment dictionary from tidytext to to quantify the sentiments related to anger, anticipation, disgust, fear, joy, sadness, surprise, and trust to see which elements in a book description are correlated with book rating.
+
+The data used in this assignment is available at :
+https://www.kaggle.com/datasets/bahramjannesarr/goodreads-book-datasets-10m
+
+# Data Wrangling
+In order to organize the data successfully the following steps were completed. 
+1. Called in the data frame 
+2. Filtered to the English Language so the results would be interpretable for me.
+3. Filtered to only books with ratings so the results would not be skewed by zeros \.
+4. Removed all NA values
+5. Unnesting the book descriptions to be able to analyze each word
+6. Loading in the NRC sentiment dataset and then merging the datasets by word 
+7. Merging the book words with the NRC dictionary
+8. Getting sentiment counts and normalizing based on number of words in the description.
+9. Creating equal class sizes and a train and test dataset to run my logisitic regression on.
+
+## Read and wrangle data.
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r calling in the data}
+#Loading the necessary libraries 
+library(tidyverse)
+library(stringr)
+library(tidytext)
+library(textdata)
+library(dplyr)
+
+#importing the data set & Filtering to relevant variables and filtering out NAs
+goodreads_corpus <- read_csv("archive/book2000k-3000k.csv") %>% 
+  filter(Language == "eng") %>% 
+  filter(Rating!=0)%>% 
+  na_if("") %>% #convert empty cells to NA
+  na.omit() 
+
+#Creating an index column 
+goodreads_corpus$id <- 1:nrow(goodreads_corpus)
+```
+
+### Unnesting the words
+```{r}
+#Sorting the books into good and bad reviews
+goodreads_corpus<- goodreads_corpus %>% 
+  mutate(bookrating = case_when(Rating > 3 ~ "goodrat",
+                                 Rating <= 3 ~ "badrat"))
+
+#get the word frequency for each text type (pos and neg sentiment)
+goodreads_corpus_words <- goodreads_corpus %>% 
+  unnest_tokens(word, Description)
+
+goodreads_corpus_words
+```
+Here I changed my parameter to above or below 3 in the hopes of creating a larger distinction between the datasets instead of using the mean.
+
+### Loading in the NRC sentiment
+```{r}
+get_sentiments("nrc")
+
+nrc_data <- get_sentiments("nrc")
+
+nrc_data
+```
+
+### Inner Joining the Data
+```{r}
+#match the words with NRC data
+nrc_words <- goodreads_corpus_words %>%
+  inner_join(nrc_data)
+
+nrc_words
+
+#create a count by text for each group of words
+count_data <- nrc_words %>% 
+  group_by(id, sentiment) %>% 
+  count
+
+count_data
+
+#widen out the tibble
+count_data_wide <- count_data %>% 
+  pivot_wider(names_from = sentiment, values_from = n)
+
+count_data_wide
+
+#get word count for texts
+nw_texts <- goodreads_corpus %>% 
+  mutate(nw = str_count(Description, "\\W+")) #this will create new variable called nw using stringr function str_count. 
+
+nw_texts
+```
+
+## Combining the sentiment and word databases 
+```{r}
+#join tibbles (nw and sentiment) together and get normed counts for sentiment/nw by text
+final_nrc_review_tib <- nw_texts %>% 
+  inner_join(count_data_wide, by = "id") %>% #join tibbles together
+  mutate_at(vars(anger:trust), list(normed = ~./nw)) %>%  #this creates new variables that are normed sentiment by text
+  mutate(bookrating = case_when(Rating > 3 ~ "goodrat",
+                                 Rating <= 3 ~ "badrat")) #Create a new variable called sentiment. Assign it positive or negative based on file id name
+```
+
+### Manipulating the dataframe 
+```{r}
+#now we have a tibble!
+final_nrc_review_tib
+
+#Making a dataframe
+final_nrc_review_df <- as.data.frame(final_nrc_review_tib)
+
+#Making all NA values into zeros
+final_nrc_review_df[is.na(final_nrc_review_df)] = 0
+
+#Checking the df 
+#final_nrc_review_df
+
+#Making a new sentiment column at the end of the dataset
+final_nrc_review_df$sentiment <- final_nrc_review_df$bookrating
+```
+
+### Removing NA values 
+```{r}
+final_nrc_review_df<-final_nrc_review_df %>% 
+  filter(sentiment=="goodrat"|sentiment=="badrat")
+```
+
+### Stratifying my dataframe
+```{r}
+#There are 1191 bad ratings and 20878 good ones so let's make them equal! 
+final_nrc_review_df %>% 
+  count(bookrating)
+
+#Creating seperate datasets to stratify our sample from
+goodrat<-final_nrc_review_df %>% 
+  filter(bookrating=="goodrat")
+
+badrat<-final_nrc_review_df %>% 
+  filter(bookrating=="badrat")
+
+#Creating equal samples of each rating
+goodrat_sample<-goodrat[sample(nrow(goodrat), 1000), ]
+badrat_sample<-badrat[sample(nrow(badrat), 1000), ]
+
+#Combining the two samples
+goodreads_nrc_sample<-rbind(goodrat_sample, badrat_sample)
+
+#Double checking the dist
+goodreads_nrc_sample %>% 
+  count(bookrating) #Perfect!
+```
+
+## Visualizing the data
+```{r}
+bar_plot_nrc <- goodreads_nrc_sample%>%
+  select(anger_normed: sentiment) %>% 
+  pivot_longer(!sentiment, names_to = "sentiment_type", values_to = "count") %>% 
+  ggplot(aes(x = factor(sentiment_type), y = count, fill = sentiment, colour = sentiment)) + 
+  geom_bar(stat = "identity", position = "dodge") + #dodge places bars side by side
+  xlab("Sentiment type") + #label stuff
+  ylab("Mean sentiment") +
+  ggtitle("Bar plot for sentiment by review type") +
+  coord_flip()
+
+bar_plot_nrc
+```
+
+# PCA 
+## Looking for Multicollinearity 
+```{r}
+#Selecting relevant variables
+goodreads_nrc_sample<-goodreads_nrc_sample %>% 
+  dplyr::select(c(5,20,33:41))
+
+cor_df<-goodreads_nrc_sample[, c(3:11)]
+cor(cor_df)
+```
+No variables have a correlation above .8 so there is no cause for concern about multicollinearity or a need to remove variables before we run the regression. 
+
+## Scaling all variables
+```{r}
+library(psych)
+
+data_pca<-goodreads_nrc_sample[, c(3:11)]
+
+str(data_pca)
+
+#Creating a set of predictors from the training dataset
+scaled_data_pca <- data_pca  %>% 
+  mutate_at(c(1:9), ~(scale(.) %>% as.vector))
+
+str(scaled_data_pca)
+```
+
+### Describing the variables 
+```{r}
+psych::describe(scaled_data_pca)
+```
+This tells me the distribution of the normed variables, which are all relatively similar since they have already been normed so are relatively low values. 
+
+### Visualizing the PCA 
+```{r}
+library(factoextra)
+```
+
+```{r}
+#line below runs a simple PCA with a component for each variable. 
+#the most variance will be explained in component 1 and 2
+
+viz_pca <- prcomp(scaled_data_pca, center = TRUE,scale. = TRUE)
+
+summary(viz_pca) #show the proportion of variance explained by all possible components along with cumulative variance
+```
+
+```{r}
+viz_pca$rotation #show the loadings for each component by variable
+```
+
+```{r}
+fviz_pca_var(viz_pca,
+             col.var = "contrib", # Color by contributions to the PC
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE #Avoid overlapping text if possible 
+             )
+```
+
+### Bartlett's Test
+```{r}
+cortest.bartlett(scaled_data_pca, 2000) #2000 equals sample size
+```
+If significant, the R-matrix is not an identity matrix
+
+There are some relationships between the variables in the analysis
+i.e., you can conduct a PCA
+if not significant, the variables are not related
+
+### KMO 
+```{r}
+KMO(scaled_data_pca)
+```
+The test measures sampling adequacy for each variable in the model and for the complete model. All my values are above .7 which means they are good for being in the model.
+
+## Baseline PCA
+```{r}
+pca_base <- principal(scaled_data_pca, nfactors = 9, rotate = "none")
+
+pca_base #results
+```
+The only factors that are informative enough to include in the regression will have an SS loading above 1, which means it will only be PC1 and PC2 since PC3 has an SS loading value of .77
+
+## Scree Plot
+```{r}
+#How many components to extract? The number of SS loadings greater than 1 (Kaiser's criterion).
+
+#scree plot using eigen values stored in pca_1$values
+plot(pca_base$values, type = "b")
+```
+My point of inflection looks like 3 but I know the third factor has an SS loading under 1 so I will go forward with two factors!
+
+### Check that resids are normally distributed 
+```{r}
+pca_resid <- principal(scaled_data_pca, nfactors = 2, rotate = "none")
+pca_resid #results. 3 looks good
+```
+
+```{r}
+#residuals
+#require correlation matrix for final data
+corMatrix<-cor(scaled_data_pca)
+#corMatrix
+
+#next,create an object from the correlation matrix and the pca loading. Call it residuals. It will contain the factor residuals
+residuals<-factor.residuals(corMatrix, pca_resid$loadings)
+
+#call a histogram to check residuals
+hist(residuals) #are the residuals normally distributed? They look okay. That is good
+```
+The residuals look realtively normally distributed so it is okay to move forward. 
+
+### Informed PCA with specific number of components
+```{r}
+#rotation. Since factors should be related, use oblique technique (promax), if unrelated, use varimax
+pca_final <- principal(scaled_data_pca, nfactors = 2, rotate = "promax")
+pca_final #results. 
+```
+This looks good that they cumulatively explain a large proportion of the variance.
+
+```{r}
+#let's make the results easier to read. Include loadings over 3 and sort them
+print.psych(pca_final, cut = 0.3, sort = TRUE)
+```
+
+```{r}
+plot(pca_final)
+```
+This shows a good distinction between the variables within each factor.
+
+```{r}
+fa.diagram(pca_final)
+```
+
+### Collect Factor Scores
+```{r}
+#we need the pca scores
+pca_final_scores <- as.data.frame(pca_final$scores) #scores for each text on each factor. You can use these in subsequent analyses. Lot's of them though
+```
+
+### Rename PCA variables 
+```{r}
+pca_final_scores<-rename(pca_final_scores, "Negativity" = "RC1")
+pca_final_scores<-rename(pca_final_scores, "Security" = "RC2")
+
+str(pca_final_scores)
+```
+
+
+### Merge my predictor with PCA outcome variables 
+```{r}
+predictor_pca<-cbind(goodreads_nrc_sample, pca_final_scores)
+
+predictor_pca<-predictor_pca %>% 
+  mutate(bookrating = case_when(Rating > 3 ~ "1",
+                                 Rating <= 3 ~ "0"))
+
+predictor_pca<-predictor_pca[, c(12:14)]
+```
+
+# PCA Cross Validation 
+```{r}
+library(caret)
+
+set.seed(1234)
+train.control <- trainControl(method = "cv", number = 10)
+#the GLM
+lm_cv10_step <- train(bookrating ~ .,
+                      data = predictor_pca,
+                           method = "glm", #stepwise selection 
+                           family=binomial(), #using 1-7 predictor that we have
+                           trControl = train.control)
+#the model
+summary(lm_cv10_step)
+```
+Since only the negativity variable is statistically significant, that is the only factor I will use in my final regression. 
+
+## My Final Logisitic Regression 
+```{r}
+str(predictor_pca)
+predictor_pca$bookrating<-as.numeric(predictor_pca$bookrating)
+
+finalModel<-glm(bookrating ~ Negativity, data = predictor_pca, family = binomial)
+
+summary(finalModel)
+```
+
+## Final Regression Statistics
+```{r}
+exp(finalModel$coefficients) #odds ratio as the exponential of the b coefficient for the predictor variables
+```
+This shows that more of the negativity factor sentiments are correlated with a positive review. 
+
+### Rerun final regression model using lrm function to get chi square, p value, R2 scores, and C index.
+```{r}
+#Rerun final regression model using lrm function to get chi square, p value, R2 scores, and C index.
+library(rms)
+final_reg_stat <-lrm(bookrating ~ Negativity, data = predictor_pca)
+
+final_reg_stat
+```
+The chi square is 29.45, the p value is  <0.0001, the R2 score is  0.019 and the C index is 0.588.
+
+### Using the test dataset 
+```{r}
+predicted<-predict(lm_cv10_step, newdata = predictor_pca)
+pred_label <- as.factor(ifelse(predicted ==1, 0, 1))
+actual<-predictor_pca$bookrating
+actual<-as.factor(actual)
+```
+
+### Prediction Tool 
+```{r}
+# Matrix predictions for testing set 
+table(predicted, actual)
+```
+            actual
+             0   1
+predicted 0 686 509
+          1 314 491
+
+### Creating a confusion matrix
+```{r}
+# create confusion matrix using CARET
+confusionMatrix(actual, predicted,
+                mode = "everything", #what you want to report in stats
+                positive="1")
+```
+The Accuracy is 0.5885 and the Kappa value is 0.177 
+
+### Visualize out with mosaic plot.
+```{r}
+#put the actual and predicted values into a table
+mosaic_table <- table(actual, predicted)
+mosaic_table #check on that table
+
+#simple mosaic plot
+mosaicplot(mosaic_table,
+           main = "Confusion matrix for logistic regression",
+           sub = "Accuracy of prediction",
+           xlab = "Predicted",
+           ylab = "Actual",
+           color = "skyblue2",
+           border = "chocolate")
+
+```
+
+
+# Discussion 
+I used the same data set as I had used for assignment 6, but this time my definition of good and bad ratings was not based around the mean. So, I made bad ratings anything below or equal to 3 and good ratings anything above 3, which meant that my sample size of bad ratings significantly decreased from 10000 to 1000. This, in turn, meant my stratified samples could only have a combined sample size of 2000 instead of 20000. To counteract the change in sample size, I changed my code to a 10-fold cross glm validation instead of a train and test set. 
+
+My final logistic regression looked like:
+bookrating = 1.290841 * Negativity
+
+With a predicted 1 being a positive rating meaning 4 or a 5 stars and prediction close to 0 being a negative rating meaning 1 to 3 stars. With the dimension reduction, the only statistically relevant group was the Negativity group, which included negative_normed, anger_normed, fear_normed, disgust_normed, and sadness_normed. 
+
+The actual predictive value of this model is incredibly low. With an accuracy of 0.5885 this model is slightly better at predicting whether a book will have good or bad reviews than just guessing 50-50 on each one without doing a sentiment analysis of the book description. However, my last model had an accuracy of .5143, so there is significant improvement whether from the PCA or the change in my definition of good and bad ratings. This is also shown in the kappa value being 0.177, which is better than my previous model's kappa of 0.0286 which is also incredibly low. If it was below .01 this would indicate that there is no relationship between the model predictions and the true results. At .068 there is slight agreement between the model and the true results. 
+
+The mosaic table of the confusion matrix shows how there is not a really strong predictive power on either class and the sensitivity at 0.6099 and the specificity at 0.5741  support this. These are both increases compared to my last model's predictability. There is a slightly higher positive predictive value at 0.4910 than the negative predictive value at 0.6860 but both are close to each other. This shows that the model performs significantly better on predicting bad reviews than good reviews, but this could be because in my model at large there is so many less negative reviews than positive ones since people on average rate books highly, so it is easier to distinguish the sentiments of the ones people really did not like. 
+
+For the final model, which did not experience any difficulties from suppression or multicollinearity, The chi square is 29.45, the p value is  <0.001, the R2 score is  0.019 and the C index is 0.588. The chi squared showed how the deviance (unexplained variation) of the current model differ from a model without any predictors which the p value says this it does. The R2 is variance explained which is low which is likely contributing to the low predictability and accuracy of the model. The C index is the trade-offs between sensitivity (recall or probability of true prediction given positive outcome) and specificity (probability of false prediction given negative outcome). If it was below .5 this would be a bad model or at exactly .5 the model is no better than predicting an outcome than random chance.
+In this case, again, the model is better than chance but not by much. 
+
+Overall, I would say that is is not super surprising that the sentiment of the book descriptions are not strong predictors of their rating since that is already not intuitively tied to the rating of a book anyways. Therefore, the sentiment of the words chosen would also not be an easy model to create. This would likely be improved if I was working off of the sentiments of the text reviews on the site but I had to work within the limitations of my data set, which is why I chose to do the more expansive sentiment dictionary in hopes of having a more interesting relationship to discover. By creating a more distinct difference between the good and the bad ratings and using a PCA, I was able to successfully increase the model accuracy, but not by much. Just like its not easy to judge a book by its cover, it is apparently even more difficult to judge a book by the sentiment of its description!
